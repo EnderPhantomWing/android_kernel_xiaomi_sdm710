@@ -72,6 +72,8 @@ jobs:
       - name: Configure kernel
         run: |
           cd kernel/msm-4.9
+          # 关键：加入 ARCH=arm64
+          make O=out ARCH=arm64 CC="clang" LLVM=1 sirius_defconfig
           make O=out CC="clang" LLVM=1 sirius_defconfig
 
           # 修改 KSU 相关配置
@@ -109,6 +111,8 @@ jobs:
       - name: Build kernel
         run: |
           cd kernel/msm-4.9
+          # 同样加入 ARCH=arm64
+          make O=out ARCH=arm64 CC="clang" LLVM=1 -j$(nproc)
           make O=out CC="clang" LLVM=1 -j$(nproc)
 
       # ---------- 8. 打包 AnyKernel3 ZIP ----------
