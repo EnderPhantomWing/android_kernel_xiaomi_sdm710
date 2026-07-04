@@ -126,7 +126,7 @@ jobs:
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-android- \
             CROSS_COMPILE_ARM32=arm-linux-androideabi- \
-            LD=ld.lld \
+            LD=ld.bfd \
             KCFLAGS="$KCFLAGS_EXTRA"
       # ========== 打包 AnyKernel3 ==========
       - name: 制作 AnyKernel3 卡刷包
