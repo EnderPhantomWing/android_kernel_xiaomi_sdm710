@@ -6,15 +6,13 @@ on:
     - cron: '0 0 * * 0'
     - cron: '0 12 * * 5'
     - cron: '0 12 * * 3'
-  push:
-    branches: [ main, master ]
 
 jobs:
   build:
     runs-on: ubuntu-24.04
 
     steps:
-      # ---------- 1. 安装构建依赖 ----------
+      # ---------- 1. 安装依赖 ----------
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -29,14 +27,12 @@ jobs:
             imagemagick libelf-dev libncurses5-dev libsdl1.2-dev gpart fuse2fs \
             e2fsck-static icu-doc rsync adb fastboot libstdc++6 python-is-python3 \
             gcc-aarch64-linux-gnu
-
-          # 安装 Clang / LLVM (使用 LLVM 15)
           sudo apt-get install -y clang-15 lld-15 llvm-15
           sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-15 100
           sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-15 100
           sudo update-alternatives --install /usr/bin/ld.lld ld.lld /usr/bin/ld.lld-15 100
 
-      # ---------- 2. 迁出内核源码到 kernel/msm-4.9 ----------
+      # ---------- 2. 迁出内核源码 ----------
       - name: Checkout kernel source
         uses: actions/checkout@v4
         with:
@@ -44,11 +40,11 @@ jobs:
           path: kernel/msm-4.9
           fetch-depth: 1
 
-      # ---------- 3. 设置构建日期环境变量 ----------
+      # ---------- 3. 设置构建日期 ----------
       - name: Set build date
         run: echo "BUILD_DATE=$(date +%Y%m%d-%H%M%S)" >> $GITHUB_ENV
 
-      # ---------- 4. 应用 Rekernel 补丁 ----------
+      # ---------- 4. Rekernel 补丁 ----------
       - name: Rekernel patches
         run: |
           cd kernel/msm-4.9
@@ -68,20 +64,18 @@ jobs:
           chmod +x syscall_hook_patches.sh
           bash syscall_hook_patches.sh
 
-      # ---------- 6. 配置内核 (使用 sirius_defconfig) ----------
+      # ---------- 6. 配置内核 (修复 ARCH 传递) ----------
       - name: Configure kernel
         run: |
           cd kernel/msm-4.9
-          # 关键：加入 ARCH=arm64
-          make O=out ARCH=arm64 CC="clang" LLVM=1 sirius_defconfig
+          export ARCH=arm64                         # 关键修复：设为环境变量
+          # 可选：export CROSS_COMPILE=aarch64-linux-gnu-
           make O=out CC="clang" LLVM=1 sirius_defconfig
 
-          # 修改 KSU 相关配置
           ./scripts/config --file out/.config \
             -d CONFIG_KSU_TRACEPOINT_HOOK \
             -e CONFIG_KSU_MANUAL_HOOK
 
-          # 启用 namespaces 及其他所需选项
           ./scripts/config --file out/.config \
             -d CONFIG_USER_NS \
             -e CONFIG_PID_NS \
@@ -107,19 +101,18 @@ jobs:
           ./scripts/config --file out/.config --enable CONFIG_TMPFS_POSIX_ACL
           ./scripts/config --file out/.config --enable CONFIG_TMPFS_XATTR
 
-      # ---------- 7. 开始编译 ----------
+      # ---------- 7. 编译内核 (同样继承 ARCH) ----------
       - name: Build kernel
         run: |
           cd kernel/msm-4.9
-          # 同样加入 ARCH=arm64
-          make O=out ARCH=arm64 CC="clang" LLVM=1 -j$(nproc)
+          export ARCH=arm64
           make O=out CC="clang" LLVM=1 -j$(nproc)
 
-      # ---------- 8. 打包 AnyKernel3 ZIP ----------
+      # ---------- 8. 打包 AnyKernel3 ----------
       - name: Package with AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git AnyKernel3
-          sed -i '584s|ui_print " " "Done!";|ui_print " "; ui_print "Mi8SE ReSukiSU 内核构建完毕"; ui_print "祝你玩的愉快！";|' AnyKernel3/META-INF/com/google/android/update-binary
+          sed -i '584s|ui_print " " "Done!";|ui_print " "; ui_print "感谢支持芜夕wuxi内核，刷入完成！"; ui_print "祝你玩的愉快！";|' AnyKernel3/META-INF/com/google/android/update-binary
 
           cp kernel/msm-4.9/out/arch/arm64/boot/Image AnyKernel3/
           mkdir -p AnyKernel3/modules/vendor/lib/modules
@@ -128,7 +121,7 @@ jobs:
           cd AnyKernel3
           rm -f anykernel.sh
           wget https://github.com/miaizhe/Kernel_oppo_sm7325_Reno10/releases/download/boot/anykernel.sh
-          zip -r9 ../ReSukiSU-MI8SE-WithoutTWRP-${{ env.BUILD_DATE }}.zip * -x .git* README.md *placeholder
+          zip -r9 ../ReSukiSU-Reno10-WithoutTWRP-Docker-${{ env.BUILD_DATE }}.zip * -x .git* README.md *placeholder
 
       # ---------- 9. 打包 Boot Image ----------
       - name: Pack Boot Image
@@ -145,7 +138,7 @@ jobs:
             exit 1
           fi
           cp ../kernel/msm-4.9/out/arch/arm64/boot/Image kernel
-          ./magiskboot repack boot_origin.img ../boot-ReSukiSU-Mi8SE-WithoutTWRP--${{ env.BUILD_DATE }}.img
+          ./magiskboot repack boot_origin.img ../boot-ReSukiSU-Reno10-WithoutTWRP-Docker-${{ env.BUILD_DATE }}.img
 
       # ---------- 10. 上传制品到 Actions ----------
       - name: Upload artifacts
@@ -153,17 +146,17 @@ jobs:
         with:
           name: kernel-output
           path: |
-            ReSukiSU-MI8SE-WithoutTWRP-${{ env.BUILD_DATE }}.zip
-            boot-ReSukiSU-Mi8SE-WithoutTWRP--${{ env.BUILD_DATE }}.img
+            ReSukiSU-Reno10-WithoutTWRP-Docker-${{ env.BUILD_DATE }}.zip
+            boot-ReSukiSU-Reno10-WithoutTWRP-Docker-${{ env.BUILD_DATE }}.img
 
       # ---------- 11. （可选）发布到 GitHub Release ----------
       - name: Create Release
-        if: startsWith(github.ref, 'refs/tags/')   # 仅在打 tag 时触发
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            ReSukiSU-MI8SE-WithoutTWRP-${{ env.BUILD_DATE }}.zip
-            boot-ReSukiSU-Mi8SE-WithoutTWRP--${{ env.BUILD_DATE }}.img
+            ReSukiSU-Reno10-WithoutTWRP-Docker-${{ env.BUILD_DATE }}.zip
+            boot-ReSukiSU-Reno10-WithoutTWRP-Docker-${{ env.BUILD_DATE }}.img
           prerelease: false
           generate_release_notes: true
         env:
