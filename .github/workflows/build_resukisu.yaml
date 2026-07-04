@@ -12,7 +12,6 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      # ---------- 1. 安装依赖 ----------
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -32,7 +31,6 @@ jobs:
           sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-15 100
           sudo update-alternatives --install /usr/bin/ld.lld ld.lld /usr/bin/ld.lld-15 100
 
-      # ---------- 2. 迁出内核源码 ----------
       - name: Checkout kernel source
         uses: actions/checkout@v4
         with:
@@ -40,11 +38,9 @@ jobs:
           path: kernel/msm-4.9
           fetch-depth: 1
 
-      # ---------- 3. 设置构建日期 ----------
       - name: Set build date
         run: echo "BUILD_DATE=$(date +%Y%m%d-%H%M%S)" >> $GITHUB_ENV
 
-      # ---------- 4. Rekernel 补丁 ----------
       - name: Rekernel patches
         run: |
           cd kernel/msm-4.9
@@ -55,7 +51,6 @@ jobs:
           curl -LSs "https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/refs/heads/mainline/Patches/Rekernel/rekernel_extra.patch" -o rekernel_extra.patch
           patch -p1 < rekernel_extra.patch || true
 
-      # ---------- 5. 准备构建 + syscall_hook ----------
       - name: Prepare build and syscall hook
         run: |
           cd kernel/msm-4.9
@@ -64,33 +59,37 @@ jobs:
           chmod +x syscall_hook_patches.sh
           bash syscall_hook_patches.sh
 
-      # ---------- 6. 配置内核 (修复 ARCH 传递) ----------
+      # ---------- 修复后的配置步骤 ----------
       - name: Configure kernel
         run: |
           cd kernel/msm-4.9
-          export ARCH=arm64                         # 关键修复：设为环境变量
-          # 可选：export CROSS_COMPILE=aarch64-linux-gnu-
+          export ARCH=arm64
+
+          # 生成初始 defconfig
           make O=out CC="clang" LLVM=1 sirius_defconfig
 
+          # 修改 KSU 相关（-e 表示启用，无需 =y）
           ./scripts/config --file out/.config \
             -d CONFIG_KSU_TRACEPOINT_HOOK \
             -e CONFIG_KSU_MANUAL_HOOK
 
+          # 启用命名空间等（全部采用 -e 或 --enable）
           ./scripts/config --file out/.config \
             -d CONFIG_USER_NS \
             -e CONFIG_PID_NS \
             -e CONFIG_IPC_NS \
             -e CONFIG_CHECKPOINT_RESTORE \
             -e CONFIG_SYSVIPC \
-            -e CONFIG_CGROUP_CPU=y \
-            -e CONFIG_CGROUP_CPUACCT=y \
-            -e CONFIG_CPUSETS=y \
-            -e CONFIG_CGROUP_PIDS=y \
-            -e CONFIG_MEMCG=y \
-            -e CONFIG_CGROUP_DEVICE=y \
-            -e CONFIG_CGROUP_FREEZER=y \
-            -e CONFIG_CGROUP_SCHED=y
+            -e CONFIG_CGROUP_CPU \
+            -e CONFIG_CGROUP_CPUACCT \
+            -e CONFIG_CPUSETS \
+            -e CONFIG_CGROUP_PIDS \
+            -e CONFIG_MEMCG \
+            -e CONFIG_CGROUP_DEVICE \
+            -e CONFIG_CGROUP_FREEZER \
+            -e CONFIG_CGROUP_SCHED
 
+          # 使用 --enable 统一风格（或 -e 均可）
           ./scripts/config --file out/.config --enable CONFIG_CGROUP_PIDS
           ./scripts/config --file out/.config --enable CONFIG_CGROUP_IO
           ./scripts/config --file out/.config --enable CONFIG_CPUSETS
@@ -101,14 +100,17 @@ jobs:
           ./scripts/config --file out/.config --enable CONFIG_TMPFS_POSIX_ACL
           ./scripts/config --file out/.config --enable CONFIG_TMPFS_XATTR
 
-      # ---------- 7. 编译内核 (同样继承 ARCH) ----------
+          # 自动处理所有新符号的默认值，避免交互
+          make O=out ARCH=arm64 CC="clang" LLVM=1 olddefconfig
+
+      # ---------- 构建步骤 ----------
       - name: Build kernel
         run: |
           cd kernel/msm-4.9
           export ARCH=arm64
           make O=out CC="clang" LLVM=1 -j$(nproc)
 
-      # ---------- 8. 打包 AnyKernel3 ----------
+      # ---------- 打包与上传（保持不变） ----------
       - name: Package with AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git AnyKernel3
@@ -123,7 +125,6 @@ jobs:
           wget https://github.com/miaizhe/Kernel_oppo_sm7325_Reno10/releases/download/boot/anykernel.sh
           zip -r9 ../ReSukiSU-Reno10-WithoutTWRP-Docker-${{ env.BUILD_DATE }}.zip * -x .git* README.md *placeholder
 
-      # ---------- 9. 打包 Boot Image ----------
       - name: Pack Boot Image
         run: |
           mkdir -p boot_pack
@@ -140,7 +141,6 @@ jobs:
           cp ../kernel/msm-4.9/out/arch/arm64/boot/Image kernel
           ./magiskboot repack boot_origin.img ../boot-ReSukiSU-Reno10-WithoutTWRP-Docker-${{ env.BUILD_DATE }}.img
 
-      # ---------- 10. 上传制品到 Actions ----------
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -149,7 +149,6 @@ jobs:
             ReSukiSU-Reno10-WithoutTWRP-Docker-${{ env.BUILD_DATE }}.zip
             boot-ReSukiSU-Reno10-WithoutTWRP-Docker-${{ env.BUILD_DATE }}.img
 
-      # ---------- 11. （可选）发布到 GitHub Release ----------
       - name: Create Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
