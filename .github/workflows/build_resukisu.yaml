@@ -1,151 +1,420 @@
-name: 编译内核（可配置 ReSukiSU）
+name: Build Kernel for sirius-sdm710
 
 on:
   workflow_dispatch:
     inputs:
       enable_kernelsu:
-        description: '启用 ReSukiSU 支持'
+        description: '启用 BakaSU 支持'
+        required: false
+        default: false
+        type: boolean
+      enable_nomount:
+        description: '启用 NoMount VFS 挂载'
+        required: false
+        default: false
+        type: boolean
+      enable_bbr:
+        description: '启用 BBR 加速'
         required: false
         default: false
         type: boolean
 
 jobs:
-  build:
+  # ================================
+  # 1. 计算发布标签
+  # ================================
+  prepare:
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: 生成发布标签
+        id: tag
+        env:
+          ENABLE_NOMOUNT: ${{ inputs.enable_nomount }}
+          ENABLE_BBR: ${{ inputs.enable_bbr }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          BASE_DATE=$(date -u +'%Y%m%d')
+
+          if [ "${{ inputs.enable_kernelsu }}" = "true" ]; then
+            BASE="BakaSU"
+          else
+            BASE="Stock"
+          fi
+
+          # 后缀顺序: BBR > NoMount
+          SUFFIX="$BASE"
+          if [ "$ENABLE_BBR" = "true" ]; then
+            SUFFIX="${SUFFIX}-BBR"
+          fi
+          if [ "$ENABLE_NOMOUNT" = "true" ]; then
+            SUFFIX="${SUFFIX}-NoMount"
+          fi
+
+          TAG="${BASE_DATE}-sirius-${SUFFIX}-build.${RUN_NUMBER}"
+
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "发布标签: ${TAG}"
+
+  # ================================
+  # 2. 构建
+  # ================================
+  build:
+    needs: prepare
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+      ENABLE_NOMOUNT: ${{ inputs.enable_nomount }}
+      ENABLE_BBR: ${{ inputs.enable_bbr }}
+      ENABLE_KERNELSU: ${{ inputs.enable_kernelsu }}
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
       - name: 构建编译内核环境
         run: |
           sudo apt-get update
-          sudo -E apt-get -y -qq install git make bc bison ccache openssl dos2unix zip kmod cpio flex libelf-dev curl libssl-dev libtfm-dev wget device-tree-compiler ca-certificates python3 binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
+          sudo -E apt-get -y -qq install \
+            git make bc bison ccache openssl dos2unix zip kmod cpio flex \
+            libelf-dev curl libssl-dev libtfm-dev wget device-tree-compiler \
+            ca-certificates python3 binutils binutils-aarch64-linux-gnu \
+            binutils-arm-linux-gnueabi jq
           mkdir -p $GITHUB_WORKSPACE/kernel_workspace
+
       - name: 下载 Gcc 编译器
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace
           mkdir gcc64
           wget -O gcc-aarch64.tar.gz https://github.com/EnderPhantomWing/android_kernel_xiaomi_sdm710/releases/download/gcc/64android-12.1.0_r27.tar.gz
           tar -C gcc64/ -zxvf gcc-aarch64.tar.gz
+
           mkdir gcc32
           wget -O gcc-arm.tar.gz https://github.com/EnderPhantomWing/android_kernel_xiaomi_sdm710/releases/download/gcc/32android-12.1.0_r27.tar.gz
           tar -C gcc32/ -zxvf gcc-arm.tar.gz
+
       - name: 下载 Clang 编译器
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace
           mkdir clang-aosp
-          git clone -q --depth=1 https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-6443078 -b 10.0 clang-aosp
+          git clone -q --depth=1 \
+            https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-6443078 \
+            -b 10.0 clang-aosp
+
       - name: 下载内核源码
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace
           git clone https://github.com/EnderPhantomWing/android_kernel_xiaomi_sdm710 android-kernel
-          cd android-kernel
+
       - name: 设置 ccache 缓存
         uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: android_kernel_xiaomi_sdm710
+          key: android_kernel_xiaomi_sdm710-${{ inputs.enable_kernelsu }}-${{ inputs.enable_nomount }}
           max-size: 2G
 
       # ========== ReSukiSU 相关 ==========
-      - name: ReSukiSU
+      - name: BakaSU (原ReSukiSU) - 应用旧版补丁
         if: inputs.enable_kernelsu == true
         run: |
-          echo "ReSukiSU_LOG: 开始下载并应用 ReSukiSU 官方 4.9 patch"
           cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+          echo "BakaSU_LOG: 下载并应用 ReSukiSU 官方 4.9 patch"
           wget https://github.com/ReSukiSU/ReSukiSU_Patches/raw/main/scope-minimized/kernel-4.9.patch -O ksu-4.9.patch || { echo "下载 patch 失败"; exit 1; }
           patch -p1 < ksu-4.9.patch || { echo "patch 应用失败"; cat ksu-4.9.patch; exit 1; }
-      - name: ReSukiSU - 植入 ReSukiSU 核心
+
+      # ========== NoMount 相关 ==========
+      - name: NoMount - 启用 VFS 挂载
+        if: inputs.enable_nomount == true
+        run: |
+          cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+          echo "KSU_LOG: 启用 NoMount VFS 挂载"
+          curl -LfsS \
+            https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh \
+            -o nomount-setup.sh \
+            || { echo "下载 NoMount setup 脚本失败"; exit 1; }
+          bash nomount-setup.sh dev
+
+      - name: BakaSU (原ReSukiSU) - 注入核心代码
+        id: resukisuinline
         if: inputs.enable_kernelsu == true
         run: |
+          # 从 BakaSU 仓库获取 commit 数量，用于计算 Manager version code
+          git clone --bare https://github.com/Baka-SU/BakaSU.git
+          cd BakaSU.git
+          COUNT=$(git rev-list --count HEAD)
+          RESUKISU_MANAGER_VERSION_CODE=$((30000 + COUNT + 700))
+          echo "resukisu_manager_version_code=$RESUKISU_MANAGER_VERSION_CODE"
+          echo "resukisu_manager_version_code=$RESUKISU_MANAGER_VERSION_CODE" >> "$GITHUB_OUTPUT"
+          echo "$RESUKISU_MANAGER_VERSION_CODE" > "$GITHUB_WORKSPACE/kernel_workspace/manager_version_resukisu.txt"
+
           cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
-          rm -rf ReSukiSU
-          curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
-      # ========== LXC / Docker 支持 ==========
-      - name: LXC/Docker - 开启内核配置
-        if: inputs.enable_lxc_docker == true
-        run: |
-          cd $GITHUB_WORKSPACE/kernel_workspace
-          wget https://github.com/wu17481748/lxc-docker/releases/download/lxc-docker-2config/LXC-DOCKER-OPEN-CONFIG.sh
-          chmod +x LXC-DOCKER-OPEN-CONFIG.sh
-          ./LXC-DOCKER-OPEN-CONFIG.sh android-kernel/arch/arm64/configs/PFGM00_defconfig -w
-      - name: LXC/Docker - 禁用 task_turbo 模块
-        if: inputs.enable_lxc_docker == true
-        run: |
-          cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
-          sed -i '/CONFIG_MTK_TASK_TURBO/d' arch/arm64/configs/PFGM00_defconfig
-          echo "# CONFIG_MTK_TASK_TURBO is not set" >> arch/arm64/configs/PFGM00_defconfig
-      - name: LXC/Docker - 打入 runc 补丁
-        if: inputs.enable_lxc_docker == true
-        run: |
-          cd $GITHUB_WORKSPACE/kernel_workspace
-          wget https://raw.githubusercontent.com/tomxi1997/lxc-docker-support-for-android/refs/heads/main/runcpatch.sh
-          chmod +x runcpatch.sh
-          if [ -f android-kernel/kernel/cgroup.c ]; then
-            ./runcpatch.sh android-kernel/kernel/cgroup.c
-          fi
-          if [ -f android-kernel/kernel/cgroup/cgroup.c ]; then
-            ./runcpatch.sh android-kernel/kernel/cgroup/cgroup.c
-          fi
-      - name: LXC/Docker - 打入 xt_qtaguid 补丁
-        if: inputs.enable_lxc_docker == true
-        run: |
-          cd $GITHUB_WORKSPACE/kernel_workspace
-          if [ -f android-kernel/net/netfilter/xt_qtaguid.c ]; then
-            wget https://github.com/wu17481748/lxc-docker/releases/download/lxc/lxc.patch
-            patch -p0 < lxc.patch
-          fi
-      - name: LXC/Docker - 关闭 ANDROID_PARANOID_NETWORK
-        if: inputs.enable_lxc_docker == true
-        run: |
-          cd $GITHUB_WORKSPACE/kernel_workspace
-          sed -i '/CONFIG_ANDROID_PARANOID_NETWORK/d' android-kernel/arch/arm64/configs/PFGM00_defconfig
-          echo "# CONFIG_ANDROID_PARANOID_NETWORK is not set" >> android-kernel/arch/arm64/configs/PFGM00_defconfig
-      # ========== KVM 支持 ==========
-      - name: KVM - 开启配置
-        if: inputs.enable_kvm == true
-        run: |
-          cd $GITHUB_WORKSPACE/kernel_workspace
-          echo "CONFIG_VIRTUALIZATION=y" >> android-kernel/arch/arm64/configs/PFGM00_defconfig
-          echo "CONFIG_KVM=y" >> android-kernel/arch/arm64/configs/PFGM00_defconfig
-          echo "CONFIG_VHOST_NET=y" >> android-kernel/arch/arm64/configs/PFGM00_defconfig
-          echo "CONFIG_VHOST_CROSS_ENDIAN_LEGACY=y" >> android-kernel/arch/arm64/configs/PFGM00_defconfig
+          rm -rf BakaSU
+          curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" | bash
+
       # ========== 编译内核 ==========
       - name: 开始编译内核
+        id: build_kernel
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
           export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang-aosp/bin:$GITHUB_WORKSPACE/kernel_workspace/gcc64/bin:$GITHUB_WORKSPACE/kernel_workspace/gcc32/bin:$PATH
-          export KBUILD_BUILD_HOST=AndroidDeveloper@Android.com
-          export KBUILD_BUILD_USER=AndroidDeveloper
-          # 如果启用 LXC/Docker，额外添加 KCFLAGS 忽略特定警告
-          if [ "${{ inputs.enable_lxc_docker }}" = "true" ]; then
-            KCFLAGS_EXTRA="-Wno-error=sizeof-array-div"
-          else
-            KCFLAGS_EXTRA=""
-          fi
+          export KBUILD_BUILD_HOST=Github@EnderPhantomWing
+          export KBUILD_BUILD_USER=EnderPhantomWing
+
+          BUILD_TIME=$(date -u +%Y%m%dT%H%M%SZ)
+          COMMIT_SHORT=${GITHUB_SHA:0:10}
+          RUN_NUMBER=$(printf "%05d" "${{ github.run_number }}")
+          export LOCALVERSION="-g${COMMIT_SHORT}-${RUN_NUMBER}-${BUILD_TIME}"
+          echo "LOCALVERSION=${LOCALVERSION}"
+
           make -s -j$(nproc --all) O=out ARCH=arm64 sirius_defconfig
+
+          # BBR
+          if [ "$ENABLE_BBR" = "true" ]; then
+            echo "启用 BBR..."
+            ./scripts/config --file out/.config \
+              --enable CONFIG_TCP_CONG_BBR \
+              --enable CONFIG_NET_SCH_FQ
+            make O=out olddefconfig
+          else
+            echo "不启用 BBR..."
+          fi
+
+          # NoMount
+          if [ "$ENABLE_NOMOUNT" = "true" ]; then
+            echo "KSU_LOG: 启用 NoMount VFS 挂载"
+            ./scripts/config --file out/.config \
+              --enable CONFIG_NOMOUNT \
+              --enable CONFIG_KEYS
+          else
+            echo "不启用 NoMount VFS 挂载"
+            ./scripts/config --file out/.config --disable CONFIG_NOMOUNT
+          fi
+
+          make O=out ARCH=arm64 olddefconfig
+
+          # 校验 NoMount
+          if [ "$ENABLE_NOMOUNT" = "true" ]; then
+            grep -qx 'CONFIG_NOMOUNT=y' out/.config \
+              && grep -qx 'CONFIG_KEYS=y' out/.config \
+              || { echo "NoMount 或 CONFIG_KEYS 配置未生效，终止编译"; exit 1; }
+          elif grep -Eq '^CONFIG_NOMOUNT=(y|m)$' out/.config; then
+            echo "NoMount 未关闭，终止编译"
+            exit 1
+          fi
+
           make -j$(nproc --all) CC="ccache clang" O=out ARCH=arm64 \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-android- \
             CROSS_COMPILE_ARM32=arm-linux-androideabi- \
-            KCFLAGS="$KCFLAGS_EXTRA"
+            KCFLAGS=""
+
+          KERNEL_VERSION=$(make -s O=out ARCH=arm64 kernelrelease | grep -E '^[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
+          echo "KERNEL_VERSION=${KERNEL_VERSION}"
+
+          if [ "$ENABLE_KERNELSU" = "true" ]; then
+            ROOT_TYPE=bakasu
+          else
+            ROOT_TYPE=none
+          fi
+          echo "$KERNEL_VERSION" > "$GITHUB_WORKSPACE/kernel_workspace/kernel_version_${ROOT_TYPE}.txt"
+
+      # ========== 生成产物名称 ==========
+      - name: 创建 AK3 后缀
+        id: gen_name
+        run: |
+          if [ "$ENABLE_KERNELSU" = "true" ]; then
+            NAME="sirius-BakaSU"
+            ROOT_TYPE="bakasu"
+          else
+            NAME="sirius-Stock"
+            ROOT_TYPE="none"
+          fi
+
+          # 后缀顺序: BBR > NoMount
+          if [ "$ENABLE_BBR" = "true" ]; then
+            NAME="${NAME}-BBR"
+          fi
+          if [ "$ENABLE_NOMOUNT" = "true" ]; then
+            NAME="${NAME}-NoMount"
+          fi
+
+          echo "artifact_name=${NAME}" >> $GITHUB_OUTPUT
+          echo "root_type=${ROOT_TYPE}" >> $GITHUB_OUTPUT
+          echo "产物名称: ${NAME}"
+
       # ========== 打包 AnyKernel3 ==========
       - name: 制作 AnyKernel3 卡刷包
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace
-          # 统一使用官方 osm0sis 的 AnyKernel3（若需更换源可在此调整）
-          git clone https://github.com/osm0sis/AnyKernel3
+          git clone https://github.com/EnderPhantomWing/AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
           sed -i 's!block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;!block=auto;!g' AnyKernel3/anykernel.sh
+          sed -i 's!block=/dev/block/by-name/boot;!block=auto;!g' AnyKernel3/anykernel.sh
           sed -i 's/is_slot_device=0;/is_slot_device=auto;/g' AnyKernel3/anykernel.sh
           cp android-kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
           rm -rf AnyKernel3/.git* AnyKernel3/README.md
-      - name: 上传 AnyKernel3 包
+
+          ZIP_NAME="${{ steps.gen_name.outputs.artifact_name }}.zip"
+          (cd AnyKernel3 && zip -r9 "../${ZIP_NAME}" .)
+          ls -lh "${ZIP_NAME}"
+
+      # ========== 上传产物 ==========
+      - name: 上传版本信息
         uses: actions/upload-artifact@v4
         with:
-          name: AnyKernel.zip
-          path: kernel_workspace/AnyKernel3/*
+          name: version-info-${{ steps.gen_name.outputs.root_type }}
+          path: |
+            kernel_workspace/kernel_version_${{ steps.gen_name.outputs.root_type }}.txt
+            kernel_workspace/manager_version_${{ steps.gen_name.outputs.root_type }}.txt
+          if-no-files-found: warn
+
+      - name: 上传 AnyKernel3 zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: ak3-${{ steps.gen_name.outputs.root_type }}
+          path: kernel_workspace/${{ steps.gen_name.outputs.artifact_name }}.zip
+
+      - name: 重命名内核镜像（带 root 后缀）
+        run: |
+          SRC=kernel_workspace/android-kernel/out/arch/arm64/boot/Image.gz
+          DST=kernel_workspace/Image-${{ steps.gen_name.outputs.root_type }}.gz
+          cp "$SRC" "$DST"
 
       - name: 上传内核镜像
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-Image.gz
-          path: kernel_workspace/android-kernel/out/arch/arm64/boot/Image.gz
+          name: Image-${{ steps.gen_name.outputs.root_type }}
+          path: kernel_workspace/Image-${{ steps.gen_name.outputs.root_type }}.gz
+
+  # ================================
+  # 3. 摘要与发布
+  # ================================
+  release:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 下载所有产物
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: 生成版本摘要
+        id: version_summary
+        run: |
+          if [ "${{ inputs.enable_kernelsu }}" = "true" ]; then
+            ROOT="bakasu"
+          else
+            ROOT="none"
+          fi
+
+          KV_FILE="artifacts/kernel_version_${ROOT}.txt"
+          MV_FILE="artifacts/manager_version_${ROOT}.txt"
+          if [ -f "$KV_FILE" ]; then KV=$(cat "$KV_FILE"); else KV="未知"; fi
+          if [ -f "$MV_FILE" ]; then MV=$(cat "$MV_FILE"); else MV="未知"; fi
+
+          SUMMARY="${ROOT}: Kernel=${KV}, Manager=${MV}\n"
+          echo "summary<<EOF" >> "$GITHUB_OUTPUT"
+          echo -e "$SUMMARY" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: 将变量输出到摘要
+        id: output_summary
+        run: |
+          ENABLE_NOMOUNT='${{ inputs.enable_nomount }}'
+          ENABLE_BBR='${{ inputs.enable_bbr }}'
+          ENABLE_KERNELSU='${{ inputs.enable_kernelsu }}'
+
+          if [ "$ENABLE_KERNELSU" = "true" ]; then
+            ROOT="bakasu"
+            NAME="sirius-BakaSU"
+          else
+            ROOT="none"
+            NAME="sirius-Stock"
+          fi
+
+          # 后缀顺序: BBR > NoMount
+          if [ "$ENABLE_BBR" = "true" ]; then
+            NAME="${NAME}-BBR"
+          fi
+          if [ "$ENABLE_NOMOUNT" = "true" ]; then
+            NAME="${NAME}-NoMount"
+          fi
+
+          KV_FILE="artifacts/kernel_version_${ROOT}.txt"
+          MV_FILE="artifacts/manager_version_${ROOT}.txt"
+          if [ -f "$KV_FILE" ]; then KV=$(cat "$KV_FILE"); else KV="N/A"; fi
+          if [ -f "$MV_FILE" ]; then MV=$(cat "$MV_FILE"); else MV="N/A"; fi
+
+          {
+            echo "### Build Variables Summary"
+            echo ""
+            echo "| Variable | Value |"
+            echo "|------|-----|"
+            echo "| **Root Config** | $ROOT |"
+            echo "| **Publish Tag** | ${{ needs.prepare.outputs.tag }} |"
+            echo "| **Enable BakaSU** | ${{ inputs.enable_kernelsu }} |"
+            echo "| **Enable NoMount** | ${{ inputs.enable_nomount }} |"
+            echo "| **Enable BBR** | ${{ inputs.enable_bbr }} |"
+            echo ""
+            echo "### Build Matrix"
+            echo ""
+            echo "| Root Type | Artifact Name | Kernel Version | Root Manager Version |"
+            echo "|-----------|---------------|----------|------------|"
+            echo "| $ROOT | ak3-$ROOT / ${NAME}.zip | $KV | $MV |"
+            echo ""
+            echo "### Environment Infomation"
+            echo ""
+            echo "| Variable | Value |"
+            echo "|------|-----|"
+            echo "| **Commit SHA** | ${{ github.sha }} |"
+            echo "| **Action Run Number** | ${{ github.run_number }} |"
+            echo "| **Action Name** | Build Kernel for sirius-sdm710 |"
+          } >> $GITHUB_STEP_SUMMARY
+
+          {
+            echo "summary_release<<EOF"
+            echo "### Build Variables Summary"
+            echo ""
+            echo "| Variable | Value |"
+            echo "|------|-----|"
+            echo "| **Root Config** | $ROOT |"
+            echo "| **Publish Tag** | ${{ needs.prepare.outputs.tag }} |"
+            echo "| **Enable BakaSU** | ${{ inputs.enable_kernelsu }} |"
+            echo "| **Enable NoMount** | ${{ inputs.enable_nomount }} |"
+            echo "| **Enable BBR** | ${{ inputs.enable_bbr }} |"
+            echo ""
+            echo "### Environment Infomation"
+            echo ""
+            echo "| Variable | Value |"
+            echo "|------|-----|"
+            echo "| **Commit SHA** | ${{ github.sha }} |"
+            echo "| **Action Run Number** | ${{ github.run_number }} |"
+            echo "| **Action Name** | Build Kernel for sirius-sdm710 |"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: 列出已下载文件
+        run: find artifacts -type f
+
+      - name: 创建发布并上传
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: ${{ needs.prepare.outputs.tag }}
+          body: |
+            Automated release
+            | Commit ${{ github.sha }} | Build #${{ github.run_number }} |
+
+            Kernel / Manager Version Summary: 
+            ${{ steps.version_summary.outputs.summary }}
+
+            ${{ steps.output_summary.outputs.summary_release }}
+          files: |
+            artifacts/*.zip
+            artifacts/*.gz
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
