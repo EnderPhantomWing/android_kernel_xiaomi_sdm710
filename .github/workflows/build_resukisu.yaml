@@ -105,7 +105,7 @@ jobs:
       - name: 下载内核源码
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace
-          git clone https://github.com/EnderPhantomWing/android_kernel_xiaomi_sdm710 android-kernel
+          git clone --depth=1 https://github.com/EnderPhantomWing/android_kernel_xiaomi_sdm710 android-kernel
 
       - name: 设置 ccache 缓存
         uses: hendrikmuhs/ccache-action@v1.2
