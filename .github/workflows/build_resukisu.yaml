@@ -403,7 +403,7 @@ jobs:
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-android- \
             CROSS_COMPILE_ARM32=arm-linux-androideabi- \
-            LD="ld.lld --target=aarch64-linux-gnu" \
+            LD="ld.lld -m aarch64linux" \
             KCFLAGS="$KCFLAGS_EXTRA"
           # 修复：仅提取内核版本，去除 make 输出噪音
           KERNEL_VERSION=$(make -s O=out ARCH=arm64 kernelrelease | grep -E '^[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
