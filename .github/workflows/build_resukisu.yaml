@@ -15,7 +15,7 @@ on:
         default: false
         type: boolean
       enable_resukisu:
-        description: '启用 ReSukiSU 支持'
+        description: '启用 BakaSU (原ReSukiSU) 支持'
         required: false
         default: true
         type: boolean
@@ -85,7 +85,6 @@ jobs:
           echo "total-count=$TOTAL_COUNT" >> $GITHUB_OUTPUT
           echo "Root 配置: $ROOT_CONFIGS"
           echo "总数: $TOTAL_COUNT"
-
   # ================================
   # 2. 计算发布标签（由矩阵共享）
   # ================================
@@ -111,7 +110,6 @@ jobs:
         run: |
           BASE_DATE=$(date -u +'%Y%m%d')
           COUNT=$(echo "$ROOT_CONFIGS" | jq length)
-
           # ---------- 确定基础名称 ----------
           if [ "$COUNT" -gt 1 ]; then
             BASE="All"
@@ -120,7 +118,6 @@ jobs:
           else
             BASE="none"
           fi
-
           # ---------- 按顺序添加后缀: Docker > KVM > BBR > SUSFS > NoMount ----------
           SUFFIX="$BASE"
           if [ "$ENABLE_LXC_DOCKER" = "true" ]; then
@@ -138,13 +135,10 @@ jobs:
           if [ "$ENABLE_NOMOUNT" = "true" ]; then
             SUFFIX="${SUFFIX}-NoMount"
           fi
-
           # ---------- 追加 build.{buildNumber} ----------
           TAG="${BASE_DATE}-${SUFFIX}-build.${RUN_NUMBER}"
-
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "发布标签: ${TAG}"
-
   # ================================
   # 3. 矩阵构建
   # ================================
@@ -182,23 +176,19 @@ jobs:
             ca-certificates python3 binutils binutils-aarch64-linux-gnu \
             binutils-arm-linux-gnueabi jq
           mkdir -p $GITHUB_WORKSPACE/kernel_workspace
-
       - name: 下载 GCC 工具链 (64 位和 32 位)
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace
-
           # 64 位工具链
           mkdir -p gcc64
           wget -O gcc-aarch64.tar.gz --tries=3 --timeout=30 \
             https://github.com/EnderPhantomWing/android_kernel_xiaomi_sdm710/releases/download/gcc/64android-12.1.0_r27.tar.gz
           tar -C gcc64/ -zxvf gcc-aarch64.tar.gz
-
           # 32 位工具链
           mkdir -p gcc32
           wget -O gcc-arm.tar.gz --tries=3 --timeout=30 \
             https://github.com/EnderPhantomWing/android_kernel_xiaomi_sdm710/releases/download/gcc/32android-12.1.0_r27.tar.gz
           tar -C gcc32/ -zxvf gcc-arm.tar.gz
-
       - name: 下载 Clang 工具链 (AOSP)
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace
@@ -206,12 +196,10 @@ jobs:
           git clone -q --depth=1 \
             https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-6443078 \
             -b 10.0 clang-aosp
-
       - name: 下载内核源码
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace
           git clone --depth=1 https://github.com/EnderPhantomWing/android_kernel_xiaomi_sdm710.git android-kernel
-
       - name: 设置 ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
@@ -225,15 +213,13 @@ jobs:
           echo "KSU_LOG: 下载并应用 RKSU 官方 4.9 补丁"
           wget https://github.com/rksuorg/kernel_patches/raw/master/manual_hook/kernel-4.9.patch -O ksu-4.9.patch
           patch -p1 < ksu-4.9.patch || { echo "补丁应用失败"; exit 1; }
-
-      - name: ReSukiSU - 应用旧版补丁
+      - name: BakaSU (原ReSukiSU) - 应用旧版补丁
         if: matrix.root == 'resukisu'
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
           echo "KSU_LOG: 下载并应用 ReSukiSU 官方 4.9 补丁"
           wget https://github.com/ReSukiSU/ReSukiSU_Patches/raw/main/scope-minimized/kernel-4.9.patch -O ksu-4.9.patch
           patch -p1 < ksu-4.9.patch || { echo "补丁应用失败"; exit 1; }
-
       - name: SUSFS - 启用 SUSFS
         if: env.ENABLE_SUSFS == 'true'
         run: |
@@ -244,7 +230,6 @@ jobs:
           sed -i 's/^orig_flow:$/orig_flow:;/' fs/notify/fdinfo.c
           grep -q '^orig_flow:;$' fs/notify/fdinfo.c \
             || { echo "SUSFS fdinfo 兼容性修复失败"; exit 1; }
-
       - name: NoMount - 启用 VFS 挂载
         if: env.ENABLE_NOMOUNT == 'true'
         run: |
@@ -255,7 +240,6 @@ jobs:
             -o nomount-setup.sh \
             || { echo "下载 NoMount setup 脚本失败"; exit 1; }
           bash nomount-setup.sh dev
-
       - name: KernelSU - 注入核心代码
         id: ksuinline
         if: matrix.root == 'kernelsu'
@@ -267,7 +251,6 @@ jobs:
           echo "ksu_manager_version_code=$KSU_MANAGER_VERSION_CODE"
           echo "ksu_manager_version_code=$KSU_MANAGER_VERSION_CODE" >> "$GITHUB_OUTPUT"
           echo "$KSU_MANAGER_VERSION_CODE" > "$GITHUB_WORKSPACE/kernel_workspace/manager_version_kernelsu.txt"
-
           cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
           rm -rf KernelSU
           curl -LSs "https://raw.githubusercontent.com/rsuntk/KernelSU/main/kernel/setup.sh" | bash
@@ -278,8 +261,7 @@ jobs:
               -o susfs_inline_hook_patches.sh
             bash susfs_inline_hook_patches.sh
           fi
-
-      - name: ReSukiSU - 注入核心代码 + SUSFS 内联钩子
+      - name: BakaSU (原ReSukiSU) - 注入核心代码 + SUSFS 内联钩子
         id: resukisuinline
         if: matrix.root == 'resukisu'
         run: |
@@ -290,7 +272,6 @@ jobs:
           echo "resukisu_manager_version_code=$RESUKISU_MANAGER_VERSION_CODE"
           echo "resukisu_manager_version_code=$RESUKISU_MANAGER_VERSION_CODE" >> "$GITHUB_OUTPUT"
           echo "$RESUKISU_MANAGER_VERSION_CODE" > "$GITHUB_WORKSPACE/kernel_workspace/manager_version_resukisu.txt"
-
           cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
           rm -rf KernelSU
           curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" | bash
@@ -301,7 +282,6 @@ jobs:
               -o susfs_inline_hook_patches.sh
             bash susfs_inline_hook_patches.sh
           fi
-
       - name: LXC/Docker - 启用内核配置
         if: env.ENABLE_LXC_DOCKER == 'true'
         run: |
@@ -309,14 +289,12 @@ jobs:
           wget https://github.com/wu17481748/android-lxc-docker/releases/download/lxc-docker-2config/LXC-DOCKER-OPEN-CONFIG.sh
           chmod +x LXC-DOCKER-OPEN-CONFIG.sh
           ./LXC-DOCKER-OPEN-CONFIG.sh android-kernel/arch/arm64/configs/sirius_defconfig -w
-
       - name: LXC/Docker - 禁用 task_turbo 模块
         if: env.ENABLE_LXC_DOCKER == 'true'
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
           sed -i '/CONFIG_MTK_TASK_TURBO/d' arch/arm64/configs/sirius_defconfig
           echo "# CONFIG_MTK_TASK_TURBO is not set" >> arch/arm64/configs/sirius_defconfig
-
       - name: LXC/Docker - 应用 runc 补丁
         if: env.ENABLE_LXC_DOCKER == 'true'
         run: |
@@ -329,7 +307,6 @@ jobs:
           if [ -f android-kernel/kernel/cgroup/cgroup.c ]; then
             ./runcpatch.sh android-kernel/kernel/cgroup/cgroup.c
           fi
-
       - name: LXC/Docker - 应用 xt_qtaguid 补丁
         if: env.ENABLE_LXC_DOCKER == 'true'
         run: |
@@ -338,14 +315,12 @@ jobs:
             wget https://raw.githubusercontent.com/wu17481748/android-lxc-docker/refs/heads/main/xt_qtaguid.patch
             patch -p0 < xt_qtaguid.patch
           fi
-
       - name: LXC/Docker - 禁用 ANDROID_PARANOID_NETWORK
         if: env.ENABLE_LXC_DOCKER == 'true'
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace
           sed -i '/CONFIG_ANDROID_PARANOID_NETWORK/d' android-kernel/arch/arm64/configs/sirius_defconfig
           echo "# CONFIG_ANDROID_PARANOID_NETWORK is not set" >> android-kernel/arch/arm64/configs/sirius_defconfig
-
       - name: KVM - 启用配置
         if: env.ENABLE_KVM == 'true'
         run: |
@@ -354,7 +329,6 @@ jobs:
           echo "CONFIG_KVM=y" >> android-kernel/arch/arm64/configs/sirius_defconfig
           echo "CONFIG_VHOST_NET=y" >> android-kernel/arch/arm64/configs/sirius_defconfig
           echo "CONFIG_VHOST_CROSS_ENDIAN_LEGACY=y" >> android-kernel/arch/arm64/configs/sirius_defconfig
-
       - name: 开始构建内核
         id: build_kernel
         run: |
@@ -362,15 +336,12 @@ jobs:
           export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang-aosp/bin:$GITHUB_WORKSPACE/kernel_workspace/gcc64/bin:$GITHUB_WORKSPACE/kernel_workspace/gcc32/bin:$PATH
           export KBUILD_BUILD_HOST=Github@EnderPhantomWing
           export KBUILD_BUILD_USER=EnderPhantomWing
-
           BUILD_TIME=$(date -u +%Y%m%dT%H%M%SZ)
           COMMIT_SHORT=${GITHUB_SHA:0:10}
           RUN_NUMBER=$(printf "%05d" "${{ github.run_number }}")
           export LOCALVERSION="-g${COMMIT_SHORT}-${RUN_NUMBER}-${BUILD_TIME}"
           echo "LOCALVERSION=${LOCALVERSION}"
-
           make -j$(nproc --all) O=out ARCH=arm64 sirius_defconfig
-
           # BBR
           if [ "$ENABLE_BBR" = "true" ]; then
             echo "启用 BBR..."
@@ -381,13 +352,11 @@ jobs:
           else
             echo "不启用 BBR..."
           fi
-
           if [ "$ENABLE_LXC_DOCKER" = "true" ]; then
             KCFLAGS_EXTRA="-Wno-error=sizeof-array-div"
           else
             KCFLAGS_EXTRA=""
           fi
-
           if [ "$ENABLE_SUSFS" = "true" ]; then
             echo "KSU_LOG: 启用 CONFIG_KSU + CONFIG_KSU_SUSFS (手动钩子)"
             ./scripts/config --file out/.config \
@@ -403,7 +372,6 @@ jobs:
               --disable KSU_SUSFS \
               --disable KSU_TRACEPOINT_HOOK
           fi
-
           if [ "$ENABLE_NOMOUNT" = "true" ]; then
             echo "KSU_LOG: 启用 NoMount VFS 挂载"
             ./scripts/config --file out/.config \
@@ -413,16 +381,13 @@ jobs:
             echo "不启用 NoMount VFS 挂载"
             ./scripts/config --file out/.config --disable CONFIG_NOMOUNT
           fi
-
           ./scripts/config --file out/.config \
             --enable NAMESPACES \
             --enable DEVTMPFS \
             --disable USER_NS \
             --enable DEVTMPFS_MOUNT \
             --enable SECTION_MISMATCH_WARN_ONLY
-
           make O=out ARCH=arm64 olddefconfig
-
           if [ "$ENABLE_NOMOUNT" = "true" ]; then
             grep -qx 'CONFIG_NOMOUNT=y' out/.config \
               && grep -qx 'CONFIG_KEYS=y' out/.config \
@@ -431,19 +396,19 @@ jobs:
             echo "NoMount 未关闭，终止编译"
             exit 1
           fi
-
+          # ============================================================
+          # 关键修改：为 ld.lld 指定目标架构，解决空 built-in.o 链接错误
+          # ============================================================
           make -j$(nproc --all) CC="ccache clang" O=out ARCH=arm64 \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-android- \
             CROSS_COMPILE_ARM32=arm-linux-androideabi- \
-            LD=ld.lld \
+            LD="ld.lld --target=aarch64-linux-gnu" \
             KCFLAGS="$KCFLAGS_EXTRA"
-
           # 修复：仅提取内核版本，去除 make 输出噪音
           KERNEL_VERSION=$(make -s O=out ARCH=arm64 kernelrelease | grep -E '^[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
           echo "KERNEL_VERSION=${KERNEL_VERSION}"
           echo "$KERNEL_VERSION" > "$GITHUB_WORKSPACE/kernel_workspace/kernel_version_${{ matrix.root }}.txt"
-
       # ---------- 生成产物名称 ----------
       - name: 创建 AK3 后缀
         id: gen_name
@@ -471,7 +436,6 @@ jobs:
           fi
           echo "artifact_name=${NAME}" >> $GITHUB_OUTPUT
           echo "产物名称: ${NAME}"
-
       # ---------- 打包 ----------
       - name: 构建 AnyKernel3 包
         run: |
@@ -482,11 +446,9 @@ jobs:
           sed -i 's/is_slot_device=0;/is_slot_device=auto;/g' AnyKernel3/anykernel.sh
           cp android-kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
           rm -rf AnyKernel3/.git* AnyKernel3/README.md
-
           ZIP_NAME="${{ steps.gen_name.outputs.artifact_name }}.zip"
           (cd AnyKernel3 && zip -r9 "../${ZIP_NAME}" .)
           ls -lh "${ZIP_NAME}"
-
       # ---------- 上传产物 ----------
       - name: 上传版本信息
         uses: actions/upload-artifact@v4
@@ -508,7 +470,6 @@ jobs:
           SRC=kernel_workspace/android-kernel/out/arch/arm64/boot/Image.gz
           DST=kernel_workspace/Image-${{ matrix.root }}.gz
           cp "$SRC" "$DST"
-
       - name: 上传内核镜像
         uses: actions/upload-artifact@v4
         with:
@@ -548,7 +509,6 @@ jobs:
           echo "summary<<EOF" >> "$GITHUB_OUTPUT"
           echo -e "$SUMMARY" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
-
       - name: 将变量输出到摘要
         id: output_summary
         run: |
@@ -616,7 +576,6 @@ jobs:
             echo "| **Action Run Number** | ${{ github.run_number }} |"
             echo "| **Action Name** | Build Kernel for sirius-SDM710 |"
           } >> $GITHUB_STEP_SUMMARY
-
           {
             echo "summary_release<<EOF"
             echo "### Build Variables Summary"
@@ -642,7 +601,6 @@ jobs:
             echo "| **Action Name** | Build Kernel for sirius-SDM710 |"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
-
       - name: 列出已下载文件
         run: find artifacts -type f
 
@@ -654,10 +612,8 @@ jobs:
           body: |
             Automated release
             | Commit ${{ github.sha }} | Build #${{ github.run_number }} |
-
             Kernel / Manager Version Summary: 
             ${{ steps.version_summary.outputs.summary }}
-
             ${{ steps.output_summary.outputs.summary_release }}
           files: |
             artifacts/*.zip
