@@ -405,8 +405,17 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-androideabi- \
             LD="ld.lld -m aarch64linux" \
             KCFLAGS="$KCFLAGS_EXTRA"
-          # 修复：仅提取内核版本，去除 make 输出噪音
-          KERNEL_VERSION=$(make -s O=out ARCH=arm64 kernelrelease | grep -E '^[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
+          # ============================================================
+          # 改动 2：不再调用 "make kernelrelease"
+          # 因为那会触发 arch/arm64/Makefile:66 的 CROSS_COMPILE_ARM32 检查
+          # 导致 make 直接 Stop，KERNEL_VERSION 变空。
+          # 直接读取已生成的 out/include/config/kernel.release 即可。
+          # ============================================================
+          KERNEL_VERSION=$(cat out/include/config/kernel.release 2>/dev/null \
+            | grep -E '^[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
+          if [ -z "$KERNEL_VERSION" ]; then
+            KERNEL_VERSION="unknown"
+          fi
           echo "KERNEL_VERSION=${KERNEL_VERSION}"
           echo "$KERNEL_VERSION" > "$GITHUB_WORKSPACE/kernel_workspace/kernel_version_${{ matrix.root }}.txt"
       # ---------- 生成产物名称 ----------
