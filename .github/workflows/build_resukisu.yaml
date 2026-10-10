@@ -292,7 +292,7 @@ jobs:
           echo "$RESUKISU_MANAGER_VERSION_CODE" > "$GITHUB_WORKSPACE/kernel_workspace/manager_version_resukisu.txt"
 
           cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
-          rm -rf BakaSU
+          rm -rf KernelSU
           curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" | bash
           if [ "$ENABLE_SUSFS" = "true" ]; then
             echo "KSU_LOG: 应用 ReSukiSU SUSFS 内联钩子"
